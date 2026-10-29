@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiModelConfig } from "@gadgets/workshop-shared/api";
@@ -153,6 +153,53 @@ describe("UserDurableObject model editing", () => {
       await expect(user.addModel(PROFILE, auto))
           .rejects.toThrow("The Auto Router model runs only through an AI Gateway.");
     });
+  });
+});
+
+describe("Direct model connection tests", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps stored secrets bound to the exact endpoint before making any request", async () => {
+    const { inDo, stored } = await userWithModel();
+    const request = vi.spyOn(globalThis, "fetch");
+    await expect(inDo(u => u.testModel({ ...CONFIG, apiUrl: "https://other.example/v1", apiToken: null }, PROFILE.id)))
+        .rejects.toThrow("re-enter");
+    expect(request).not.toHaveBeenCalled();
+    expect(await stored(PROFILE.id)).toEqual({ profile: PROFILE, config: CONFIG });
+  });
+
+  it("reports an empty-body 404 without saving or leaking provider text", async () => {
+    const { inDo, stored } = await userWithModel();
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 404 }));
+    expect(await inDo(u => u.testModel(CONFIG))).toEqual({ ok: false, reason: "request", status: 404 });
+    expect(request).toHaveBeenCalled();
+    expect(await stored(PROFILE.id)).toEqual({ profile: PROFILE, config: CONFIG });
+  });
+
+  it("uses the exact model and endpoint and accepts an actual response without saving", async () => {
+    const { inDo, stored } = await userWithModel();
+    const item = { type: "message", id: "message", role: "assistant", status: "completed",
+      content: [{ type: "output_text", text: "OK", annotations: [] }] };
+    const events = [
+      { type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress", content: [] } },
+      { type: "response.output_item.done", output_index: 0, item },
+      { type: "response.completed", response: { id: "response", status: "completed", output: [item],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+    ];
+    const requests: { url: string; authorization: string | null; body: { model: string; max_output_tokens: number } }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      requests.push({ url: request.url, authorization: request.headers.get("Authorization"), body: await request.json() });
+      return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+        { headers: { "content-type": "text/event-stream" } });
+    });
+    expect(await inDo(u => u.testModel({ ...CONFIG, apiToken: null }, PROFILE.id))).toEqual({ ok: true });
+    expect(requests[0].url).toBe("https://proxy.example/v1/responses");
+    expect(requests[0].authorization).toBe("Bearer sk-secret");
+    const body = requests[0].body;
+    expect(body.model).toBe("my-model");
+    expect(body.max_output_tokens).toBeLessThanOrEqual(256);
+    expect(await stored(PROFILE.id)).toEqual({ profile: PROFILE, config: CONFIG });
   });
 });
 
