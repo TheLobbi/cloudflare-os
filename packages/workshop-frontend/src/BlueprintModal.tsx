@@ -298,7 +298,7 @@ export default function BlueprintModal({ onClose, overseer, gadget, metadata, bl
                   ? 'Publish this gadget as a reusable template.'
                   : formMode === 'edit'
                     ? 'Update the details, screenshot, and connection guidance for this blueprint.'
-                    : 'Turn this gadget into a reusable starting point.'}
+                    : 'Manage blueprint updates and publishing.'}
               </Dialog.Description>
               </div>
             </div>
@@ -463,20 +463,6 @@ export default function BlueprintModal({ onClose, overseer, gadget, metadata, bl
               </div>
             ) : (
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
-              <ActionCard
-                title="Create blueprint"
-                description="Publish this gadget as a reusable template."
-                trailing={<Plus size={16} className="text-kumo-subtle" />}
-                onClick={() => {
-                  setNewTitle(metadata.title)
-                  setNewDescription('')
-                  setNewScreenshotBlob(null)
-                  setNewScreenshotUrl(null)
-                  setClearScreenshot(false)
-                  setEditingBlueprint(null)
-                  setFormMode('create')
-                }}
-              />
               {blueprintUpdate && (
                 <ActionCard
                   title="Update from blueprint"
@@ -493,10 +479,24 @@ export default function BlueprintModal({ onClose, overseer, gadget, metadata, bl
                   disabled={blueprintUpdate.disabled}
                 />
               )}
+              <ActionCard
+                title="Create blueprint"
+                description="Publish this gadget as a reusable template."
+                trailing={<Plus size={16} className="text-kumo-subtle" />}
+                onClick={() => {
+                  setNewTitle(metadata.title)
+                  setNewDescription('')
+                  setNewScreenshotBlob(null)
+                  setNewScreenshotUrl(null)
+                  setClearScreenshot(false)
+                  setEditingBlueprint(null)
+                  setFormMode('create')
+                }}
+              />
 
             <section>
               <h3 className="mb-2 text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                Existing blueprints
+                Existing published blueprints
               </h3>
 
               {loading ? (
