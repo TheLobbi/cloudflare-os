@@ -1,22 +1,18 @@
-import { useState, useEffect } from 'react'
-import { Dialog, Button, Input, Select, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
-import { AiChatAuthorInfo, AiModelProvider, AiGatewayInfo, RedactedAiModelConfig, SUGGESTED_MODELS, modelKind } from '@gadgets/workshop-shared/api'
+import { useState, useEffect, useRef } from 'react'
+import { Banner, Dialog, Button, Input, Select, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
+import { AiModelProvider, AiGatewayInfo, RedactedAiModelConfig, SUGGESTED_MODELS, modelKind } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { ExtraHeadersEditor } from './features/ai-models/ExtraHeadersEditor'
 import { StoredSecretInput } from './features/ai-models/StoredSecretInput'
 import {
-  headerRowsFromRecord, headerRowsToRecord, validateHeaderRows, type HeaderRow,
+  headerRowsFromRecord, validateHeaderRows, type HeaderRow,
 } from './features/ai-models/extraHeaders'
-import { PROVIDER_LABELS, parseTokenLimit } from './features/ai-models/modelForm'
-
-/**
- * Whether the modal adds a model from scratch, edits a stored one, or adds a model based on a
- * stored one, with the stored model's withheld secrets carried over.
- */
-export type ModelModalMode =
-  | { type: 'add' }
-  | { type: 'edit' | 'clone', source: { profile: AiChatAuthorInfo, config: RedactedAiModelConfig } }
+import { suggestedOpenAiBaseUrl, PROVIDER_LABELS, parseTokenLimit } from './features/ai-models/modelForm'
+import { modelTestFailure } from './features/ai-models/modelTest'
+import { buildModelConfig, initialModelFields, tokenDescription, modelProfile, modelPresentation,
+  modelCredentials, isTokenRequired, type ModelModalMode, type SelectionType } from './features/ai-models/modelDraft'
+export type { ModelModalMode } from './features/ai-models/modelDraft'
 
 interface AddModelModalProps {
   visible: boolean
@@ -27,40 +23,6 @@ interface AddModelModalProps {
   mode?: ModelModalMode
   /** Leave decision models out, for callers choosing the user's chat model. */
   chatModelsOnly?: boolean
-}
-
-type SelectionType =
-  | { type: 'suggested', provider: AiModelProvider, modelId: string, displayName: string }
-  | { type: 'custom', provider: AiModelProvider }
-
-// Placeholder hinting at the shape of each provider's API token.
-const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
-  anthropic: 'sk-ant-...',
-  openai: 'sk-...',
-  google: 'AIza...',
-  cloudflare: 'Cloudflare API token',
-  ollama: '(optional)',
-  // Never shown: Auto Router's one model is the deployment's (see AiGatewayInfo.enabledProviders).
-  'cloudflare-auto-router': '',
-}
-
-// Providers whose client can send no API key at all, so a proxy that extra headers authenticate
-// can supply its own (AI Gateway only injects a stored key into requests that carry none). Google's
-// SDK always sends a key, and the Workers AI endpoint can't be redirected to a proxy.
-const TOKEN_OPTIONAL_WITH_HEADERS: ReadonlySet<AiModelProvider> = new Set(['anthropic', 'openai'])
-
-const isTokenRequired = (provider: AiModelProvider, headerRows: readonly HeaderRow[]) =>
-  provider !== 'ollama' &&
-  !(TOKEN_OPTIONAL_WITH_HEADERS.has(provider) && headerRowsToRecord(headerRows) !== undefined)
-
-// Example used in the custom-model placeholders for providers that have no suggested models
-// (currently Ollama, which serves whatever the user has pulled locally).
-const FALLBACK_EXAMPLE_MODEL = { modelId: 'gemma4:31b', name: 'Gemma 4 31B' }
-
-// Pick an example model to show in the custom-model placeholders for the given provider.
-function exampleModel(provider: AiModelProvider): { modelId: string, name: string } {
-  const first = Object.entries(SUGGESTED_MODELS[provider])[0]
-  return first ? { modelId: first[0], name: first[1].name } : FALLBACK_EXAMPLE_MODEL
 }
 
 // Encode a selection into a string value for the Select component.
@@ -112,29 +74,43 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   return options
 }
 
+
+const groupOptions = (options: ReturnType<typeof buildOptions>) => {
+  const groups: { provider: string; items: typeof options }[] = []
+  for (const opt of options) {
+    const last = groups[groups.length - 1]
+    if (last && last.provider === opt.provider) last.items.push(opt)
+    else groups.push({ provider: opt.provider, items: [opt] })
+  }
+  return groups
+}
+
 export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig, mode = { type: 'add' }, chatModelsOnly = false }: AddModelModalProps) {
   const toasts = useKumoToastManager()
 
   // Edit and clone modes take their initial state from the source model, so the caller remounts
   // the modal (with a `key`) to switch source.
-  const source = mode.type === 'add' ? null : mode.source
-  const editing = mode.type === 'edit'
+  const initial = initialModelFields(mode)
+  const { source, editing } = initial
 
   const [loading, setLoading] = useState(false)
+  const [testError, setTestError] = useState<string | null>(null)
+  const requestId = useRef(0)
+  useEffect(() => () => { requestId.current++ }, [visible])
   const [selection, setSelection] = useState<SelectionType | null>(
-    source && { type: 'custom', provider: source.config.provider })
+    initial.selection)
   const [selectValue, setSelectValue] = useState<string | undefined>(undefined)
 
   // Form fields (used for custom models). A null secret keeps the source's withheld value.
-  const [modelId, setModelId] = useState(editing ? source!.config.model : '')
-  const [displayName, setDisplayName] = useState(editing ? source!.profile.name : '')
-  const [apiToken, setApiToken] = useState<string | null>(source ? source.config.apiToken : '')
-  const [accountId, setAccountId] = useState(source?.config.accountId ?? '')
-  const [apiUrl, setApiUrl] = useState(source?.config.apiUrl ?? '')
+  const [modelId, setModelId] = useState(initial.modelId)
+  const [displayName, setDisplayName] = useState(initial.displayName)
+  const [apiToken, setApiToken] = useState<string | null>(initial.apiToken)
+  const [accountId, setAccountId] = useState(initial.accountId)
+  const [apiUrl, setApiUrl] = useState(initial.apiUrl)
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>(() => headerRowsFromRecord(source?.config.extraHeaders))
   // Token limits are specific to a model, so a clone doesn't inherit them.
-  const [contextWindow, setContextWindow] = useState(editing ? String(source!.config.contextWindow ?? '') : '')
-  const [outputLimit, setOutputLimit] = useState(editing ? String(source!.config.outputLimit ?? '') : '')
+  const [contextWindow, setContextWindow] = useState(initial.contextWindow)
+  const [outputLimit, setOutputLimit] = useState(initial.outputLimit)
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -150,8 +126,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
   // The server keeps withheld secrets only for the endpoint they were configured for. Once the URL
   // changes, withheld values are shown (and sent) as blank, and header values must be re-entered.
-  const storedSecretsUsable = source !== null && apiUrl.trim() === (source.config.apiUrl ?? '')
-  const effectiveApiToken = apiToken === null && !storedSecretsUsable ? '' : apiToken
+  const { storedSecretsUsable, effectiveApiToken } = modelCredentials(source, apiUrl, apiToken)
 
   // Reset all state when dialog closes
   useEffect(() => {
@@ -169,6 +144,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setErrors({})
       setHeaderErrors({})
       setAdvancedOpen(false)
+      setLoading(false)
+      setTestError(null)
     }
   }, [visible])
 
@@ -253,44 +230,40 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     return Object.keys(newErrors).length === 0 && Object.keys(newHeaderErrors).length === 0
   }
 
+  const testBeforeSave = async (config: RedactedAiModelConfig, request: number) => {
+    if (gatewayMode || config.provider !== 'openai') return true
+    const result = await authenticatedApi.testModel(config, source?.profile.id)
+    if (request !== requestId.current) return false
+    if (result.ok) return true
+    setTestError(modelTestFailure(result))
+    return false
+  }
+
   const handleSubmit = async () => {
     if (!validate()) return
 
+    const request = ++requestId.current
     setLoading(true)
+    setTestError(null)
     try {
-      const isSuggested = selection!.type === 'suggested'
-      const finalModelId = isSuggested ? selection!.modelId : modelId.trim()
-      const finalDisplayName = isSuggested ? selection!.displayName : displayName.trim()
+      const finalModelId = selection!.type === 'suggested' ? selection!.modelId : modelId.trim()
+      const profile = modelProfile(selection!, mode, finalModelId, displayName)
 
-      const profile: AiChatAuthorInfo = {
-        type: 'agent',
-        // A model's ID is its identity to chats and settings, so editing never changes it.
-        id: editing ? source!.profile.id : finalModelId,
-        name: finalDisplayName,
-      }
+      const config = buildModelConfig({ provider: selection!.provider, model: finalModelId,
+        gatewayMode, apiToken: effectiveApiToken, accountId, apiUrl, headerRows, contextWindow, outputLimit })
 
-      const extraHeaders = gatewayMode ? undefined : headerRowsToRecord(headerRows)
-      const contextWindowTokens = parseTokenLimit(contextWindow)
-      const outputLimitTokens = parseTokenLimit(outputLimit)
-      const config: RedactedAiModelConfig = {
-        provider: selection!.provider,
-        model: finalModelId,
-        apiToken: gatewayMode ? '' : effectiveApiToken?.trim() ?? null,
-        ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
-        ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
-        ...(extraHeaders && { extraHeaders }),
-        ...(contextWindowTokens && { contextWindow: contextWindowTokens }),
-        ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
-      }
-
+      if (!await testBeforeSave(config, request)) return
+      if (request !== requestId.current) return
       if (editing) {
         await authenticatedApi.updateModel(profile, config)
       } else {
         await authenticatedApi.addModel(profile, config, source?.profile.id)
       }
+      if (request !== requestId.current) return
       toasts.add({ title: editing ? 'AI model updated successfully' : 'AI model added successfully', variant: 'success' })
       onSuccess()
     } catch (error: any) {
+      if (request !== requestId.current) return
       console.error('Failed to save model:', error)
       toasts.add({
         title: editing ? 'Failed to update model' : 'Failed to add model',
@@ -298,38 +271,25 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         variant: 'error',
       })
     } finally {
-      setLoading(false)
+      if (request === requestId.current) setLoading(false)
     }
   }
 
   const options = buildOptions(gatewayMode, enabledProviders, chatModelsOnly)
-  const showCustomFields = selection?.type === 'custom'
-  const example = selection ? exampleModel(selection.provider) : null
-  const isOllama = selection?.provider === 'ollama'
-  const isCloudflare = selection?.provider === 'cloudflare'
-  const showCredentials = !gatewayMode
-  const tokenRequired = selection !== null && isTokenRequired(selection.provider, headerRows)
+  const { showCustomFields, example, isOllama, isCloudflare, showCredentials, tokenPlaceholder } = modelPresentation(selection, gatewayMode, headerRows)
   const title = { add: 'Add AI Model', edit: 'Edit AI Model', clone: 'Clone AI Model' }[mode.type]
+  const suggestedApiUrl = selection && suggestedOpenAiBaseUrl(selection.provider, apiUrl)
 
-  // Group options by provider for rendering with visual separators.
-  const groupedOptions: { provider: string; items: typeof options }[] = []
-  for (const opt of options) {
-    const last = groupedOptions[groupedOptions.length - 1]
-    if (last && last.provider === opt.provider) {
-      last.items.push(opt)
-    } else {
-      groupedOptions.push({ provider: opt.provider, items: [opt] })
-    }
-  }
+  const groupedOptions = groupOptions(options)
 
   return (
-    <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
+    <Dialog.Root open={visible} onOpenChange={(open) => { if (!open && !loading) onCancel() }}>
       <Dialog className="responsive-dialog overflow-y-auto p-6" size="lg">
         <Dialog.Title className="text-lg font-semibold mb-4">
           {title}
         </Dialog.Title>
 
-        <div className="space-y-4">
+        <fieldset disabled={loading} className="space-y-4">
           {/* Model / Provider selection */}
           {source ? (
             <Input
@@ -412,16 +372,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             <StoredSecretInput
               label="API Token"
               stored={storedSecretsUsable && source!.config.apiToken === null}
-              placeholder={tokenRequired ? API_TOKEN_PLACEHOLDERS[selection.provider] : '(optional)'}
-              description={
-                isOllama
-                  ? 'Optional for local Ollama access'
-                  : isCloudflare
-                  ? 'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)'
-                  : TOKEN_OPTIONAL_WITH_HEADERS.has(selection.provider)
-                  ? `Your ${PROVIDER_LABELS[selection.provider]} API token for billing. Leave blank if the extra headers under Advanced Settings authenticate you to a proxy that supplies its own key.`
-                  : `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`
-              }
+              placeholder={tokenPlaceholder}
+              description={tokenDescription(selection.provider)}
               value={effectiveApiToken}
               onValueChange={(v) => { setApiToken(v); setErrors(prev => ({ ...prev, apiToken: '' })) }}
               error={errors.apiToken}
@@ -454,10 +406,18 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                     <Input
                       label="API URL"
                       placeholder="https://..."
-                      description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
+                      description={selection.provider === 'openai'
+                        ? 'OpenAI Responses API base URL, usually ending in /v1. Model IDs are case-sensitive.'
+                        : 'Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)'}
                       value={apiUrl}
                       onChange={(e) => setApiUrl(e.target.value)}
                     />
+                  )}
+                  {showCredentials && suggestedApiUrl && (
+                    <div className="space-y-2 text-sm text-kumo-subtle">
+                      <p>Most OpenAI-compatible servers require /v1. Changing the URL requires re-entering stored credentials.</p>
+                      <Button onClick={() => setApiUrl(suggestedApiUrl)}>Use {suggestedApiUrl}</Button>
+                    </div>
                   )}
                   {showCredentials && (
                     <ExtraHeadersEditor
@@ -496,7 +456,15 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               </Collapsible.DefaultPanel>
             </Collapsible.Root>
           )}
-        </div>
+        </fieldset>
+
+        {!gatewayMode && selection?.provider === 'openai' && (
+          <p className="mt-4 text-sm text-kumo-subtle">
+            Saving first sends a small test request (up to 256 tokens). Only a model that answers
+            is saved. This tests the model connection; tools and gadget rendering still need verification.
+          </p>
+        )}
+        {testError && <Banner className="mt-4" variant="error" title="Model was not saved" description={testError} />}
 
         {/* Footer */}
         <div className="mt-6 flex justify-end gap-2">

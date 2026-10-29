@@ -165,6 +165,21 @@ describe('ConnectHandoffPage', () => {
     expect(close).not.toHaveBeenCalled()
   })
 
+  it('redeems the same-tab connector nonce once and returns to Gatekeepers instead of closing', async () => {
+    completeConnectHandoff.mockResolvedValue(undefined)
+    signedIn()
+    arrive(TICKET, undefined)
+    sessionStorage.setItem('gadgets.sameTabConnect', JSON.stringify({ nonce: NONCE, expiresAt: Date.now() + 60_000 }))
+    const replace = vi.fn<(url: string) => void>()
+    vi.stubGlobal('location', { hash: '#' + TICKET, pathname: HANDOFF_PATH, replace })
+    await render({ strict: true })
+    await rerender()
+    expect(completeConnectHandoff).toHaveBeenCalledExactlyOnceWith(TICKET, NONCE)
+    expect(replace).toHaveBeenCalledExactlyOnceWith('/gatekeepers')
+    expect(close).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('gadgets.sameTabConnect')).toBeNull()
+  })
+
   it('reports the link invalid and calls nothing without a storage record', async () => {
     signedIn()
     arrive(TICKET, undefined)
@@ -176,6 +191,21 @@ describe('ConnectHandoffPage', () => {
     expect(completeConnectHandoff).not.toHaveBeenCalled()
     expect(confirmLogin).not.toHaveBeenCalled()
     expect(window.location.hash).toBe('')
+  })
+
+  it('offers a return to Gatekeepers when the same-tab connection has expired', async () => {
+    signedIn()
+    arrive(TICKET, undefined)
+    sessionStorage.setItem('gadgets.sameTabConnect', JSON.stringify({ nonce: NONCE, expiresAt: Date.now() - 1 }))
+
+    const page = await render()
+
+    expect(page.textContent).toContain("This link isn't valid")
+    expect(page.querySelector('a')?.getAttribute('href')).toBe('/gatekeepers')
+    expect(page.querySelector('a')?.textContent).toBe('Return to Gatekeepers')
+    expect(completeConnectHandoff).not.toHaveBeenCalled()
+    expect(confirmLogin).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('gadgets.sameTabConnect')).toBeNull()
   })
 
   it('reports the link invalid for a malformed fragment', async () => {

@@ -192,6 +192,9 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   updateModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig): Promise<void> {
     return this.#user.updateModel(profile, config);
   }
+  testModel(config: RedactedAiModelConfig, copySecretsFrom?: string) {
+    return this.#user.testModel(config, copySecretsFrom);
+  }
   deleteModel(id: string): Promise<void> {
     return this.#user.deleteModel(id);
   }

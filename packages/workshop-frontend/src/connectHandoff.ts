@@ -56,6 +56,14 @@ export const HANDOFF_KEY = 'gadgets.handoff'
  */
 export type PopupHandoff = { kind: 'connect' | 'login'; nonce: string }
 
+/** A blocked popup can be retried in this tab from the Connectors setup screen. */
+export class ConnectPopupBlockedError extends Error {
+  constructor() {
+    super('Pop-up blocked. Please allow pop-ups and try again.')
+    this.name = 'ConnectPopupBlockedError'
+  }
+}
+
 /**
  * Opens `url` as a popup that holds `handoff` and nothing else of this tab. The popup is opened
  * empty (a same-origin about:blank, so its sessionStorage is ours to write), disowned, given the
@@ -84,7 +92,7 @@ export function openDisownedPopup(url: string, name: string, handoff: PopupHando
   const native = openNativeAuthPopup(url, completeNative)
   if (native) return native
   const popup = window.open('', name, 'popup,width=520,height=680')
-  if (!popup) throw new Error('Pop-up blocked. Please allow pop-ups and try again.')
+  if (!popup) throw new ConnectPopupBlockedError()
   popup.opener = null
   try {
     // about:blank inherits a copy of the opener's storage before we disown it. A stale native

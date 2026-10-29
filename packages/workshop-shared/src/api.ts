@@ -466,6 +466,15 @@ export type DeviceSessionHandoffStart = {
   ticket: string;
 };
 
+/** A model connection probe outcome; never includes provider bodies or model output. */
+export type AiModelTest = { ok: true } | {
+  ok: false;
+  /** HTTP status observed by the existing model adapter, when available. */
+  status?: number;
+  /** Safe failure category, excluding provider-controlled text. */
+  reason: 'timeout' | 'request' | 'empty';
+};
+
 /** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
@@ -582,6 +591,14 @@ export interface AuthenticatedApi extends RpcTarget {
    * Passing back what `getModelConfig()` returned therefore changes nothing.
    */
   updateModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig): Promise<void>;
+
+  /**
+   * Tests a direct OpenAI-compatible model without saving it. Sends "Reply with OK." with at most
+   * 256 output tokens and a 30-second deadline. Model IDs and URLs are used exactly as supplied.
+   * Withheld secrets follow addModel's copySecretsFrom rules. Refuses gateway deployments and
+   * other providers. Success does not establish tool use or gadget generation.
+   */
+  testModel(config: RedactedAiModelConfig, copySecretsFrom?: string): Promise<AiModelTest>;
 
   /** Deletes a configured model. */
   deleteModel(id: string): Promise<void>;

@@ -26,6 +26,10 @@ import {
   type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
 
+import type { AiModelTest } from '@gadgets/workshop-shared/api';
+import { getModel } from './ai-models.js';
+import { AgentTurnError, completeText } from './ai-invoke.js';
+
 const logger = createWorkshopLogger("workshop.user");
 
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
@@ -725,6 +729,38 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     profile.type = "agent";
     this.storage.aiModels.put({profile, config: own});
+  }
+
+  async testModel(config: RedactedAiModelConfig, copySecretsFrom?: string): Promise<AiModelTest> {
+    const models = await getGatewayModels(this.env);
+    models?.refuseUserModel();
+    if (models || config.provider !== 'openai') {
+      throw new Error('Connection tests are available for direct OpenAI-compatible models.');
+    }
+    const source = copySecretsFrom === undefined ? undefined
+        : this.#getHandAddedModel(copySecretsFrom, models).config;
+    const resolved = resolveWithheldSecrets(config, source);
+    const { reasoning, compactionInputBudget, behavesLike, capabilities, ...own } = resolved;
+    const handle = getModel(this.env, own, await this.whoami());
+    const signal = AbortSignal.timeout(30_000);
+    const startedAt = Date.now();
+    let result: AiModelTest;
+    try {
+      const answer = await completeText(handle, {
+        prompt: 'Reply with OK.', maxTokens: Math.min(256, handle.model.maxTokens),
+        thinking: false, signal, cache: true,
+      });
+      result = answer.trim() ? { ok: true } : { ok: false, reason: 'empty' };
+    } catch (error) {
+      const status = error instanceof AgentTurnError ? error.statusCode : undefined;
+      result = { ok: false, reason: signal.aborted ? 'timeout' : 'request',
+        ...(status !== undefined && { status }) };
+    }
+    logger.info('Model connection tested', {
+      event: 'model.connection.tested', outcome: result.ok ? 'ok' : 'error',
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
   }
 
   async deleteModel(id: string): Promise<void> {

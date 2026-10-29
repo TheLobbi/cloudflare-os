@@ -4,6 +4,7 @@ import type { AuthenticatedApi, PublicApi } from '@gadgets/workshop-shared/api'
 import { useConnectionLost, useRpcStub } from './RpcContext'
 import { useAuth } from './useAuth'
 import { readPopupHandoff, ticketFromHandoffFragment } from './connectHandoff'
+import { readSameTabConnect } from './features/connectors/sameTabConnect'
 
 /**
  * What the page tells the user once the outcome is known: a heading and one line of detail.
@@ -54,7 +55,7 @@ export default function BrowserConnectHandoffPage() {
   // Read once: the storage record is consumed by reading it, and the fragment is stripped below.
   const [{ ticket, handoff }] = useState(() => ({
     ticket: ticketFromHandoffFragment(window.location.hash),
-    handoff: readPopupHandoff(),
+    handoff: readSameTabConnect() ?? readPopupHandoff(),
   }))
   const [result, setResult] = useState<Outcome | null>(null)
   // The session the ticket was last presented over. It is presented at most once per session,
@@ -77,7 +78,7 @@ export default function BrowserConnectHandoffPage() {
       if (isLoading || authenticatedApi === null) return
       api = authenticatedApi
       redeem = () => authenticatedApi.completeConnectHandoff(ticket, handoff.nonce)
-      done = { title: 'Connected', detail: CLOSE_HINT }
+      done = { title: 'Connected', detail: 'sameTab' in handoff ? 'Returning to Connectors…' : CLOSE_HINT }
       failed = 'Could not complete the connection'
     } else {
       api = rpcStub
@@ -92,7 +93,8 @@ export default function BrowserConnectHandoffPage() {
     redeem().then(
       () => {
         // Browsers may refuse to close a window a script did not open; the hint covers that.
-        window.close()
+        if ('sameTab' in handoff) window.location.replace('/gatekeepers')
+        else window.close()
         setResult(done)
       },
       (err: unknown) => {
@@ -118,6 +120,9 @@ export default function BrowserConnectHandoffPage() {
     <div className="flex min-h-full flex-col items-center justify-center gap-2 bg-kumo-base p-6 text-center">
       <h1 className="text-lg font-semibold text-kumo-default">{outcome?.title ?? 'Finishing up…'}</h1>
       {outcome && <p className="text-sm text-kumo-subtle">{outcome.detail}</p>}
+      {outcome && (outcome === INVALID || (handoff && 'sameTab' in handoff)) && (
+        <a className="text-kumo-link underline" href="/gatekeepers">Return to Gatekeepers</a>
+      )}
     </div>
   )
 }
