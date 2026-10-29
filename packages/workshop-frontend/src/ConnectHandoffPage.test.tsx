@@ -193,6 +193,21 @@ describe('ConnectHandoffPage', () => {
     expect(window.location.hash).toBe('')
   })
 
+  it('offers a return to Gatekeepers when the same-tab connection has expired', async () => {
+    signedIn()
+    arrive(TICKET, undefined)
+    sessionStorage.setItem('gadgets.sameTabConnect', JSON.stringify({ nonce: NONCE, expiresAt: Date.now() - 1 }))
+
+    const page = await render()
+
+    expect(page.textContent).toContain("This link isn't valid")
+    expect(page.querySelector('a')?.getAttribute('href')).toBe('/gatekeepers')
+    expect(page.querySelector('a')?.textContent).toBe('Return to Gatekeepers')
+    expect(completeConnectHandoff).not.toHaveBeenCalled()
+    expect(confirmLogin).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('gadgets.sameTabConnect')).toBeNull()
+  })
+
   it('reports the link invalid for a malformed fragment', async () => {
     signedIn()
     arrive('not-a-ticket', { kind: 'connect', nonce: NONCE })

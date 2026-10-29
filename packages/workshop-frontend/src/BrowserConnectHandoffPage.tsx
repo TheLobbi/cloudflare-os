@@ -120,7 +120,7 @@ export default function BrowserConnectHandoffPage() {
     <div className="flex min-h-full flex-col items-center justify-center gap-2 bg-kumo-base p-6 text-center">
       <h1 className="text-lg font-semibold text-kumo-default">{outcome?.title ?? 'Finishing up…'}</h1>
       {outcome && <p className="text-sm text-kumo-subtle">{outcome.detail}</p>}
-      {handoff && 'sameTab' in handoff && outcome && (
+      {outcome && (outcome === INVALID || (handoff && 'sameTab' in handoff)) && (
         <a className="text-kumo-link underline" href="/gatekeepers">Return to Gatekeepers</a>
       )}
     </div>
