@@ -399,6 +399,9 @@ gadget-minted children alike:
   subscription keeps streaming gatekeeper-derived data. Each is wrapped in a handle that holds a
   lease for its own lifetime (`#subscriptionLease`); the owner's subscriptions pass through
   uncounted.
+- **Interrupted model lookup** uses the trusted user-object restart guard. When a loop-limit
+  restart is scheduled, its agent execution remains persisted until recovery instead of being
+  discarded by the failed lookup.
 - **In-flight authorization** counts as a session-to-be: `authorizeCollaborator` holds a lease for
   the resolved role across `ensureObserver`, which can park indefinitely on collaborator-controlled
   awaits (the configuration modal, verifier RPCs). A widening then schedules the restart, the DO
