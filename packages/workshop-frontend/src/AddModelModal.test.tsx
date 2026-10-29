@@ -84,7 +84,8 @@ describe('AddModelModal', () => {
   const render = async (mode: ModelModalMode, chatModelsOnly = false) => {
     const updateModel = vi.fn<AuthenticatedApi['updateModel']>(async () => {})
     const addModel = vi.fn<AuthenticatedApi['addModel']>(async () => {})
-    const api = { updateModel, addModel } as unknown as RpcStub<AuthenticatedApi>
+    const testModel = vi.fn<AuthenticatedApi['testModel']>(async () => ({ ok: true }))
+    const api = { updateModel, addModel, testModel } as unknown as RpcStub<AuthenticatedApi>
     const container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -97,8 +98,48 @@ describe('AddModelModal', () => {
       authenticatedApi={api}
       aiConfig={{ enabled: false }}
     />))
-    return { updateModel, addModel }
+    return { updateModel, addModel, testModel }
   }
+
+  it('tests the exact OpenAI config before save and explains an empty-body 404', async () => {
+    const { updateModel, testModel } = await render({ type: 'edit', source: {
+      profile: PROFILE, config: { ...CONFIG, provider: 'openai', apiUrl: 'http://127.0.0.1:8317' },
+    } })
+    testModel.mockResolvedValue({ ok: false, reason: 'request', status: 404 })
+    await click(button('Save Changes'))
+    expect(updateModel).not.toHaveBeenCalled()
+    expect(testModel).toHaveBeenCalledWith(expect.objectContaining({ apiUrl: 'http://127.0.0.1:8317', apiToken: null }), PROFILE.id)
+    expect(document.body.textContent).toContain('HTTP 404')
+    await click(button('Advanced Settings'))
+    await click(button('Use http://127.0.0.1:8317/v1'))
+    await click(button('Save Changes'))
+    expect(testModel).toHaveBeenCalledTimes(1)
+    expect(updateModel).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('re-enter')
+  })
+
+  it('never saves a delayed probe after unmount', async () => {
+    const { updateModel, testModel } = await render({ type: 'edit', source: {
+      profile: PROFILE, config: { ...CONFIG, provider: 'openai' },
+    } })
+    let resolve!: (result: { ok: true }) => void
+    testModel.mockImplementation(() => new Promise(done => { resolve = done }))
+    await click(button('Save Changes'))
+    act(() => root!.unmount())
+    root = undefined
+    await act(async () => resolve({ ok: true }))
+    expect(updateModel).not.toHaveBeenCalled()
+  })
+
+  it('saves only after the direct model answers', async () => {
+    const { updateModel, testModel } = await render({ type: 'edit', source: {
+      profile: PROFILE, config: { ...CONFIG, provider: 'openai' },
+    } })
+    await click(button('Save Changes'))
+    expect(testModel).toHaveBeenCalledOnce()
+    expect(updateModel).toHaveBeenCalledOnce()
+    expect(testModel.mock.invocationCallOrder[0]).toBeLessThan(updateModel.mock.invocationCallOrder[0])
+  })
 
   // Onboarding picks the user's chat model, which a decision model can't be; the Providers page adds both.
   it.each([false, true])('offers decision models only without chatModelsOnly (chatModelsOnly: %s)', async (chatModelsOnly) => {

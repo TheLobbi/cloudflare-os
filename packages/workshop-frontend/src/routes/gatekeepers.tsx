@@ -21,11 +21,12 @@ import {
   SupportedResource,
   VendorDescription,
 } from '@gadgets/workshop-shared/gatekeeper'
-import { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import { GatekeeperVendorInfo, type ConnectFlowStart } from '@gadgets/workshop-shared/api'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useSiteName } from '../ServerConfigContext'
 import { AccountsSubscriberAdapter } from '../accountsSubscriber'
-import { openConnectWindow } from '../connectHandoff'
+import { ConnectPopupBlockedError, openConnectWindow } from '../connectHandoff'
+import { ContinueConnectDialog } from '../features/connectors/ContinueConnectDialog'
 import { AuthPopupCancelledError } from '../features/native-app/authPopup'
 import { nativeApp } from '../features/native-app/nativeApp'
 
@@ -467,6 +468,7 @@ function ConnectorsPage() {
   const [loadError, setLoadError] = useState(false)
 
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null)
+  const [blockedFlow, setBlockedFlow] = useState<ConnectFlowStart | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [canCancelConnect, setCanCancelConnect] = useState(false)
   const connectCancellation = useRef<AbortController | null>(null)
@@ -587,7 +589,12 @@ function ConnectorsPage() {
       } else {
         const flow = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
         setCanCancelConnect(!!nativeApp()?.authentication)
-        await openConnectWindow(flow, authenticatedApi, cancellation.signal)
+        try {
+          await openConnectWindow(flow, authenticatedApi, cancellation.signal)
+        } catch (err) {
+          if (!(err instanceof ConnectPopupBlockedError)) throw err
+          setBlockedFlow(flow)
+        }
       }
       handleCloseModal()
     } catch (err) {
@@ -860,6 +867,7 @@ function ConnectorsPage() {
 
       </div>
 
+      {blockedFlow && <ContinueConnectDialog flow={blockedFlow} onClose={() => setBlockedFlow(null)} />}
       {activeVendor && (
         <ConnectConnectorModal
           key={modalTarget?.kind === 'manage'

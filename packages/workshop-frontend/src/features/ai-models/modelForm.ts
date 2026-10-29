@@ -14,6 +14,20 @@ export const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   'cloudflare-auto-router': 'AI Gateway Auto Router',
 }
 
+/** Suggest the conventional base without changing the endpoint or retargeting stored secrets. */
+export const suggestedOpenAiBaseUrl = (provider: AiModelProvider, apiUrl: string): string | null => {
+  const trimmed = apiUrl.trim()
+  if (provider !== 'openai' || !trimmed) return null
+  try {
+    const url = new URL(trimmed)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+        url.search || url.hash || url.pathname !== '/') return null
+    return `${url.origin}/v1`
+  } catch {
+    return null
+  }
+}
+
 /** Each reasoning level's name as the Models tab shows it. */
 export const REASONING_LEVEL_LABELS: Record<ReasoningLevel, string> = {
   off: 'Off',

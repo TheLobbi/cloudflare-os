@@ -15,6 +15,10 @@ import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
 import { getBackendHost } from './connectHandoff';
 import { useStaleBackendReconnect } from './features/stale-session/useStaleBackendReconnect'
+import { clearAbandonedSameTabConnect } from './features/connectors/sameTabConnect'
+
+clearAbandonedSameTabConnect()
+window.addEventListener('pageshow', clearAbandonedSameTabConnect)
 
 // ---------------------------------------------------------------------------
 // Dev auto-login: if VITE_DEV_AUTO_LOGIN=true, automatically create/login
