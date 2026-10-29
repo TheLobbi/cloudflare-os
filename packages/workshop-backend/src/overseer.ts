@@ -1084,20 +1084,8 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Resume a single interrupted agent turn. Re-resolves the model config from the initiator's user
-  // DO (we don't persist the secret API token), then runs the agent loop, which rebuilds its state
-  // by replaying the persisted chat log.
-  async #resumeAgent(record: ActiveAgentRecord, liveChat: LiveChatContext) {
-    let owns = () => this.#liveChats.get(record.chatId) === liveChat &&
-        this.storage.chatMeta.get(record.chatId)?.activeAgent !== undefined;
-    let finish = () => {
-      if (!owns()) return;
-      let meta = this.storage.chatMeta.get(record.chatId)!;
-      delete meta.activeAgent;
-      this.storage.chatMeta.put(meta);
-      this.#unregisterRunningAgent(record.chatId);
-      this.#finishAgentTurn(record.chatId);
-    };
+  // A persisted decision or completion wins over replay, except for queued steers.
+  #settleResumedDecision(record: ActiveAgentRecord): boolean {
     // A reset can land after a request or final response committed but before teardown. Honor
     // that logged pause/completion instead of issuing another model request -- unless steers were
     // queued after the final response: as in #finishAgentTurn, they prompt the next turn.
@@ -1113,26 +1101,19 @@ class OverseerImpl implements AgentHooks {
       this.#unregisterRunningAgent(record.chatId, !!wait);
       this.#publishAgentTurnNotification(record.chatId, record.initiator, record.initiatorUserId);
       this.#finishAgentTurn(record.chatId);
-      return;
+      return true;
     }
-    if ((record.resumeAttempts ?? 0) >= AGENT_RESUME_MAX_ATTEMPTS) {
-      this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
-          "The agent could not be resumed because its model lookup was interrupted too many times.");
-      finish();
-      return;
-    }
-    // Count before I/O, so an eviction during lookup cannot reset the budget. Successful
-    // preparation clears it: this budget never retries inference or external effects.
-    let resumeAttempts = (record.resumeAttempts ?? 0) + 1;
-    record = {...record, resumeAttempts};
-    this.storage.activeAgents.put(record);
+    return false;
+  }
+
+  // Resolve the initiator afresh; only our own model-lookup RPC may trigger loop recovery.
+  async #prepareAgentResume(record: ActiveAgentRecord) {
     let aiModel: UserAiModelRecord | undefined;
     let failure: unknown;
     let leaveSession = () => {};
-    using _resumeSession = {[Symbol.dispose]: () => leaveSession()};
     try {
-      let userMeta = await retryOnDoReset(() => this.users.get(
-          this.users.idFromString(record.initiatorUserId)).getChatContext(record.modelId), this.logger);
+      let userMeta = await retryOnDoReset(() => this.wrapUserDo(this.users.get(
+          this.users.idFromString(record.initiatorUserId))).getChatContext(record.modelId), this.logger);
       aiModel = userMeta.aiModel;
       if (this.ownerId && record.initiator.type === "user" && record.initiatorUserId !== this.ownerId) {
         let user = this.users.get(this.users.idFromString(record.initiatorUserId));
@@ -1151,6 +1132,50 @@ class OverseerImpl implements AgentHooks {
       });
     }
 
+    return {aiModel, failure, leaveSession};
+  }
+
+  // Keep the durable execution while its instance is being replaced. A loop-limit rejection is
+  // not a DO reset and has no retryable flag; replacement clears the exhausted instance.
+  #deferAgentResume(record: ActiveAgentRecord, failure: unknown): boolean {
+    if (!failure) return false;
+    const restarting = this.#loopLimitRestartScheduled && isLoopLimitError(failure);
+    if (!restarting && (!shouldRetryAfterReset(failure) ||
+        (record.resumeAttempts ?? 0) >= AGENT_RESUME_MAX_ATTEMPTS)) return false;
+    this.#resumeErrors.set(record.chatId, failure);
+    this.#unregisterRunningAgent(record.chatId, true);
+    return true;
+  }
+
+  // Resume a single interrupted agent turn. Re-resolves the model config from the initiator's user
+  // DO (we don't persist the secret API token), then runs the agent loop, which rebuilds its state
+  // by replaying the persisted chat log.
+  async #resumeAgent(record: ActiveAgentRecord, liveChat: LiveChatContext) {
+    let owns = () => this.#liveChats.get(record.chatId) === liveChat &&
+        this.storage.chatMeta.get(record.chatId)?.activeAgent !== undefined;
+    let finish = () => {
+      if (!owns()) return;
+      let meta = this.storage.chatMeta.get(record.chatId)!;
+      delete meta.activeAgent;
+      this.storage.chatMeta.put(meta);
+      this.#unregisterRunningAgent(record.chatId);
+      this.#finishAgentTurn(record.chatId);
+    };
+    if (this.#settleResumedDecision(record)) return;
+    if ((record.resumeAttempts ?? 0) >= AGENT_RESUME_MAX_ATTEMPTS) {
+      this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
+          "The agent could not be resumed because its model lookup was interrupted too many times.");
+      finish();
+      return;
+    }
+    // Count before I/O, so an eviction during lookup cannot reset the budget. Successful
+    // preparation clears it: this budget never retries inference or external effects.
+    let resumeAttempts = (record.resumeAttempts ?? 0) + 1;
+    record = {...record, resumeAttempts};
+    this.storage.activeAgents.put(record);
+    let {aiModel, failure, leaveSession} = await this.#prepareAgentResume(record);
+    using _resumeSession = {[Symbol.dispose]: leaveSession};
+
     // Message preparation can start during the lookup. Let it commit first; a newer prompt or
     // Stop must win over this resume, including when the lookup itself failed.
     for (let preparation; (preparation = this.waitForChatMessagePreparation(record.chatId));) {
@@ -1158,11 +1183,7 @@ class OverseerImpl implements AgentHooks {
     }
     if (!owns()) return;
     if (liveChat.cancelController.signal.aborted) { finish(); return; }
-    if (failure && shouldRetryAfterReset(failure) && resumeAttempts < AGENT_RESUME_MAX_ATTEMPTS) {
-      this.#resumeErrors.set(record.chatId, failure);
-      this.#unregisterRunningAgent(record.chatId, true);
-      return;
-    }
+    if (this.#deferAgentResume(record, failure)) return;
     this.#resumeErrors.delete(record.chatId);
 
     if (!aiModel) {
