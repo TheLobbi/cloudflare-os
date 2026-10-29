@@ -107,4 +107,3 @@ export const modelCredentials = (source: ReturnType<typeof initialModelFields>['
   const storedSecretsUsable = source !== null && apiUrl.trim() === (source.config.apiUrl ?? '')
   return { storedSecretsUsable, effectiveApiToken: apiToken === null && !storedSecretsUsable ? '' : apiToken }
 }
-
