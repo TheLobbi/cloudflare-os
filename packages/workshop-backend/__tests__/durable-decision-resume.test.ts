@@ -117,7 +117,7 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
 function modelLookup(impl: Impl, lookup: () => Promise<{profile: typeof USER, aiModel: typeof MODEL}>) {
   // Hold/fail the caller-side read, without an unrelated user-DO RPC keeping an eviction alive.
   impl.users = {idFromString: (id: string) => id,
-    get: () => ({getChatContext: lookup, publishNotification: async () => {}})} as
+    get: (id: string) => ({id: {toString: () => id}, getChatContext: lookup, publishNotification: async () => {}})} as
       unknown as typeof impl.users;
 }
 
@@ -514,6 +514,29 @@ describe("decision handoff using the existing execution row", () => {
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(lookup).toHaveBeenCalledTimes(8); // One fresh-stub read retry per attempt.
     });
+  });
+
+  it("preserves an interrupted turn while a loop-limit restart is pending", async () => {
+    const s = await scenario(), requests = inference();
+    await s.visit(async impl => {
+      vi.spyOn(Date, "now").mockReturnValue(impl.streamGeneration + 60_000);
+      const restart = vi.spyOn(impl, "scheduleAccessRestart").mockResolvedValue();
+      modelLookup(impl, vi.fn().mockRejectedValue(new Error(
+          "Subrequest depth limit exceeded. This request looped back into the Workers runtime too many times.")));
+      decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      await impl.waitForAllAgentsToComplete();
+      expect(restart).toHaveBeenCalledTimes(1);
+      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(1);
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeDefined();
+      expect([...impl.storage.chats.list()].filter(m => m.type === "error")).toEqual([]);
+      expect(requests()).toBe(0);
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+    expect(requests()).toBe(1);
   });
 
   it("does not retry a live object shedding load", async () => {
