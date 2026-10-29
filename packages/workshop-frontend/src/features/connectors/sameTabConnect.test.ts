@@ -47,6 +47,15 @@ describe('same-tab connector handoff', () => {
     expect(assign).not.toHaveBeenCalled()
   })
 
+  it('clears the nonce when navigation throws', () => {
+    const assign = location()
+    const navigationError = new Error('navigation blocked')
+    assign.mockImplementation(() => { throw navigationError })
+
+    expect(() => continueConnectInTab(flow)).toThrow(navigationError)
+    expect(sessionStorage.getItem(KEY)).toBeNull()
+  })
+
   it.each([-1, 0, 30 * 60 * 1000 + 1])('rejects a record with invalid remaining lifetime %s', (remaining) => {
     vi.spyOn(Date, 'now').mockReturnValue(100)
     sessionStorage.setItem(KEY, JSON.stringify({ nonce: NONCE, expiresAt: 100 + remaining }))

@@ -20,7 +20,12 @@ export const continueConnectInTab = (flow: ConnectFlowStart): void => {
   }
   // The provider must never get a handle on another authenticated Workshop window.
   window.opener = null
-  window.location.assign(url.href)
+  try {
+    window.location.assign(url.href)
+  } catch (error) {
+    try { sessionStorage.removeItem(KEY) } catch { /* Storage may be disabled. */ }
+    throw error
+  }
 }
 
 /** Consumes this tab's connector nonce; the return destination is always /gatekeepers. */
